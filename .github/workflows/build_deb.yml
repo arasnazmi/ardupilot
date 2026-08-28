@@ -1,0 +1,84 @@
+# T3 Foundation Gemstone Project [t3gemstone.org]
+# SPDX-License-Identifier: Apache-2.0
+
+name: build deb
+
+on:
+  push:
+    tags:
+      - 'v*'
+    paths:
+      - 'Taskfile.yml'
+      - 'gemstone/**'
+      - '.github/workflows/build_deb.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version (used for the .deb Version field)'
+        required: false
+        default: '1.0.0'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TASK_VERSION: '3.49.1'
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: 'recursive'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            git curl build-essential python3-venv binutils-aarch64-linux-gnu dpkg-dev
+
+      - name: Install Task
+        run: |
+          curl --location "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_${TASK_VERSION}_linux_amd64.deb" --output /tmp/task.deb
+          sudo apt-get install --yes /tmp/task.deb
+
+      - name: Cache toolchains and downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/downloads
+            build/ubuntu-jammy
+          key: ${{ github.workflow }}-toolchains-${{ hashFiles('Taskfile.yml') }}
+
+      - name: Resolve package version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ inputs.version || '1.0.0' }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build t3-gem-ardupilot.deb
+        run: |
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          task build-deb VERSION="${{ steps.version.outputs.value }}"
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: t3-gem-ardupilot_${{ steps.version.outputs.value }}_arm64
+          path: t3-gem-ardupilot_*_arm64.deb
+          if-no-files-found: error
+
+      - name: Attach .deb to release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: t3-gem-ardupilot_*_arm64.deb
